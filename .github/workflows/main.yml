@@ -24,9 +24,12 @@ jobs:
           $user = "OTORITEM"
           $pass = "Otoritem@123"
 
-          # Kullanıcı yoksa ekle
-          $exists = net user $user 2>$null
-          if ($LASTEXITCODE -ne 0) {
+          try {
+              net user $user | Out-Null
+              Write-Host "User $user already exists."
+          }
+          catch {
+              Write-Host "User $user does not exist, creating..."
               net user $user $pass /add
           }
 
