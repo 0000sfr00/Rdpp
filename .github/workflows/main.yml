@@ -1,111 +1,72 @@
-name: RDP
+# =============================
+# CONFIG
+# =============================
+$UserName = "TOOLBOXLAP"
+$Password = "admin@123"
+$TailscaleAuthKey = "<tskey-auth-kVQ7kyvHrX11CNTRL-CWy5mSxAAsNrJhuB7GpGrNGihXivAjFQB>"  # Tailscale auth key
+$RuntimeDays = 3
+$CheckInterval = 30  # saniye
 
-on:
-  workflow_dispatch:
+# =============================
+# FUNCTION: Configure RDP
+# =============================
+Write-Host "Configuring RDP..."
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
+netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+Restart-Service -Name TermService -Force
 
-jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 4320 # Maksimum 3 gün
-    steps:
+# =============================
+# FUNCTION: Create User
+# =============================
+Write-Host "Creating RDP user..."
+$securePass = ConvertTo-SecureString $Password -AsPlainText -Force
+if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
+    New-LocalUser -Name $UserName -Password $securePass -AccountNeverExpires
+}
+Add-LocalGroupMember -Group "Administrators" -Member $UserName
+Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName
 
-      - name: Configure Core RDP Settings
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service -Name TermService -Force
-        shell: powershell
+# =============================
+# FUNCTION: Install Tailscale
+# =============================
+Write-Host "Installing Tailscale..."
+$tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+$installerPath = "$env:TEMP\tailscale.msi"
+Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
+Remove-Item $installerPath -Force
 
-      - name: Create Normal RDP User (safe PowerShell)
-        run: |
-          $user = "OTORITEM"
-          $pass = "Otoritem@123"
+# =============================
+# FUNCTION: Start Tailscale
+# =============================
+function Start-Tailscale {
+    Write-Host "Starting Tailscale..."
+    & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$TailscaleAuthKey --hostname=$env:COMPUTERNAME
+}
 
-          # Kullanıcı yoksa oluştur
-          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
-              $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
-              New-LocalUser -Name $user -Password $securePass -AccountNeverExpires
-              Start-Sleep -Seconds 2  # Kullanıcının işlenmesi için kısa gecikme
-          }
+# =============================
+# MAIN LOOP
+# =============================
+$EndTime = (Get-Date).AddDays($RuntimeDays)
+Start-Tailscale
 
-          # Remote Desktop Users grubuna ekle (admin değil), hata verirse ignore et
-          try {
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop
-          } catch {
-              Write-Host "Kullanıcı zaten Remote Desktop Users grubunda veya ekleme hatası oluştu, devam ediliyor."
-          }
+while ((Get-Date) -lt $EndTime) {
+    try {
+        $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        if (-not $tsIP) {
+            Write-Host "Tailscale not connected. Retrying..."
+            Start-Tailscale
+        } else {
+            Write-Host "[$(Get-Date)] Tailscale IP: $tsIP | RDP Ready"
+        }
+    } catch {
+        Write-Warning "Error checking Tailscale: $_"
+        Start-Tailscale
+    }
+    Start-Sleep -Seconds $CheckInterval
+}
 
-          # Telegram ve RDP bilgisi için env
-          echo "RDP_CREDS=User: $user | Password: $pass" >> $env:GITHUB_ENV
-        shell: powershell
-
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-        shell: powershell
-
-      - name: Establish Tailscale Connection (hardcoded authkey)
-        run: |
-          $authKey = "tskey-auth-kVQ7kyvHrX11CNTRL-CWy5mSxAAsNrJhuB7GpGrNGihXivAjFQB"
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-        shell: powershell
-
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
-        shell: powershell
-
-      - name: Send RDP info to Telegram (hardcoded token/chat id)
-        run: |
-          $botToken = "8478621310:AAGhgaYyTM22t4dYdIg-VI8ZgkTrt7Ooce8"
-          $chatId   = "8017113076"
-
-          $ip = $env:TAILSCALE_IP
-          $user = "OTORITEM"
-          $pass = "Otoritem@123"
-
-          $message = "✅ RDP hazır!`nIP: $ip`nUser: $user`nPass: $pass"
-
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$botToken/sendMessage" `
-                            -Method POST `
-                            -Body @{chat_id=$chatId; text=$message}
-        shell: powershell
-
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: OTORITEM"
-          Write-Host "Password: Otoritem@123"
-          Write-Host "==================`n"
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
-        shell: powershell
+Write-Host "3 days runtime completed."
