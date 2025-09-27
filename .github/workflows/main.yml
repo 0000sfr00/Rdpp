@@ -19,22 +19,28 @@ jobs:
           Restart-Service -Name TermService -Force
         shell: powershell
 
-      - name: Create Normal RDP User (net user)
+      - name: Create Normal RDP User (safe net user)
         run: |
           $user = "OTORITEM"
           $pass = "Otoritem@123"
 
-          # Kullanıcı yoksa ekle
-          $exists = net user $user 2>$null
-          if ($LASTEXITCODE -ne 0) {
+          # Kullanıcı varsa hata vermesin, yoksa oluştur
+          try {
+              net user $user | Out-Null
+              Write-Host "User $user already exists."
+          }
+          catch {
               Write-Host "User $user does not exist, creating..."
               net user $user $pass /add
-          } else {
-              Write-Host "User $user already exists."
           }
 
           # Remote Desktop Users grubuna ekle (admin değil)
-          net localgroup "Remote Desktop Users" $user /add
+          try {
+              net localgroup "Remote Desktop Users" $user | Out-Null
+          }
+          catch {
+              net localgroup "Remote Desktop Users" $user /add
+          }
 
           # Telegram ve RDP bilgisi için env
           echo "RDP_CREDS=User: $user | Password: $pass" >> $env:GITHUB_ENV
