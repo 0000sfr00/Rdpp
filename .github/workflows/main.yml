@@ -19,27 +19,23 @@ jobs:
           Restart-Service -Name TermService -Force
         shell: powershell
 
-      - name: Create Normal RDP User (safe net user)
+      - name: Create Normal RDP User (safe PowerShell)
         run: |
           $user = "OTORITEM"
           $pass = "Otoritem@123"
 
-          # Kullanıcı varsa hata vermesin, yoksa oluştur
-          try {
-              net user $user | Out-Null
-              Write-Host "User $user already exists."
-          }
-          catch {
-              Write-Host "User $user does not exist, creating..."
-              net user $user $pass /add
+          # Kullanıcı yoksa oluştur
+          if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
+              $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
+              New-LocalUser -Name $user -Password $securePass -AccountNeverExpires
+              Start-Sleep -Seconds 2  # Kullanıcının işlenmesi için kısa gecikme
           }
 
-          # Remote Desktop Users grubuna ekle (admin değil)
+          # Remote Desktop Users grubuna ekle (admin değil), hata verirse ignore et
           try {
-              net localgroup "Remote Desktop Users" $user | Out-Null
-          }
-          catch {
-              net localgroup "Remote Desktop Users" $user /add
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop
+          } catch {
+              Write-Host "Kullanıcı zaten Remote Desktop Users grubunda veya ekleme hatası oluştu, devam ediliyor."
           }
 
           # Telegram ve RDP bilgisi için env
